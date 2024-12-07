@@ -1,0 +1,149 @@
+from omni.isaac.examples.base_sample import BaseSample
+from omni.isaac.franka import Franka
+from omni.isaac.core.objects import DynamicCuboid, DynamicCylinder
+from omni.isaac.franka.controllers import PickPlaceController
+import numpy as np
+
+
+class MoveObjectsTask(BaseSample):
+    def __init__(self) -> None:
+        super().__init__()
+        return
+
+    def setup_scene(self):
+        world = self.get_world()
+        world.scene.add_default_ground_plane()
+
+        # Add the Franka robot to the scene
+        franka = world.scene.add(Franka(prim_path="/World/Franka_Arm", name="franka_arm"))
+
+        # Add the cubes to the scene
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Yellow_Cube",
+                name="yellow_cube",
+                position=np.array([0.6, -0.07, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([1.0, 1.0, 0]),  # Yellow
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Green_Cube",
+                name="green_cube",
+                position=np.array([0.6, 0.03, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([0, 1.0, 0]),  # Green
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Blue_Cube",
+                name="blue_cube",
+                position=np.array([0.6, 0.13, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([0, 0, 1.0]),  # Blue
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Red_Cube",
+                name="red_cube",
+                position=np.array([0.6, 0.23, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([1.0, 0, 0]),  # Red
+            )
+        )
+        
+        # Add the cylinder to the scene
+        world.scene.add(
+            DynamicCylinder(
+                prim_path="/World/Cylinder",
+                name="cylinder",
+                position=np.array([0.6, -0.17, 0.045]),
+                height=0.09,
+                radius=0.025,
+                color=np.array([0.5, 0.5, 0.5]),  # Gray
+            )
+        )
+        return
+
+    async def setup_post_load(self):
+        self._world = self.get_world()
+        self._franka = self._world.scene.get_object("franka_arm")
+        self._objects = {
+            "blue_cube": self._world.scene.get_object("blue_cube"),
+            "red_cube": self._world.scene.get_object("red_cube"),
+            "cylinder": self._world.scene.get_object("cylinder"),
+        }
+
+        # Initialize a pick and place controller
+        self._controller = PickPlaceController(
+            name="pick_place_controller",
+            gripper=self._franka.gripper,
+            robot_articulation=self._franka,
+        )
+        self._world.add_physics_callback("sim_step", callback_fn=self.physics_step)
+
+        # Open the gripper
+        self._franka.gripper.set_joint_positions(self._franka.gripper.joint_opened_positions)
+        await self._world.play_async()
+        return
+
+    async def setup_post_reset(self):
+        self._controller.reset()
+        self._franka.gripper.set_joint_positions(self._franka.gripper.joint_opened_positions)
+        await self._world.play_async()
+        return
+
+    def physics_step(self, step_size):
+        # Task order with target positions
+        task_order = {
+            "blue_cube": [0.7, 0.03, 0.025],
+            "red_cube": [0.7, -0.07, 0.025],
+            "cylinder": [0.65, -0.02, 0.045],
+        }
+
+        # Get the current joint positions of the Franka arm
+        current_joint_positions = self._franka.get_joint_positions()
+
+        for obj_name, target_position in task_order.items():
+            obj_position, _ = self._objects[obj_name].get_world_pose()
+
+            # Calculate safe positions for picking and placing
+            picking_position = np.array(obj_position)
+            placing_position = np.array(target_position)
+
+            safe_pick_position = picking_position.copy()
+            safe_pick_position[2] += 0.1  # Safe height for picking
+
+            safe_place_position = placing_position.copy()
+            safe_place_position[2] += 0.1  # Safe height for placing
+
+            # Move to the object's safe pick position
+            actions = self._controller.forward(
+                picking_position=safe_pick_position,
+                placing_position=safe_place_position,
+                current_joint_positions=current_joint_positions,
+            )
+            self._franka.apply_action(actions)
+
+            # Pick the object
+            actions = self._controller.forward(
+                picking_position=picking_position,
+                placing_position=safe_place_position,
+                current_joint_positions=current_joint_positions,
+            )
+            self._franka.apply_action(actions)
+
+            # Place the object at the target location
+            actions = self._controller.forward(
+                picking_position=safe_pick_position,
+                placing_position=placing_position,
+                current_joint_positions=current_joint_positions,
+            )
+            self._franka.apply_action(actions)
+
+        # Pause the simulation once all objects are moved
+        self._world.pause()
+        return
