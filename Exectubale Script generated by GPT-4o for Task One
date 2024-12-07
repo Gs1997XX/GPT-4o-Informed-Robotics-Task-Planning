@@ -1,0 +1,118 @@
+from omni.isaac.examples.base_sample import BaseSample
+from omni.isaac.franka import Franka
+from omni.isaac.core.objects import DynamicCuboid
+from omni.isaac.franka.controllers import PickPlaceController
+import numpy as np
+
+
+class StackCubesTask(BaseSample):
+    def __init__(self) -> None:
+        super().__init__()
+        return
+
+    def setup_scene(self):
+        world = self.get_world()
+        world.scene.add_default_ground_plane()
+
+        # Add the Franka robot to the scene
+        franka = world.scene.add(Franka(prim_path="/World/Franka_Arm", name="franka_arm"))
+
+        # Add the cubes to the scene
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Yellow_Cube",
+                name="yellow_cube",
+                position=np.array([0.6, -0.1, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([1.0, 1.0, 0]),  # Yellow
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Green_Cube",
+                name="green_cube",
+                position=np.array([0.6, 0.03, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([0, 1.0, 0]),  # Green
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Blue_Cube",
+                name="blue_cube",
+                position=np.array([0.6, 0.16, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([0, 0, 1.0]),  # Blue
+            )
+        )
+        world.scene.add(
+            DynamicCuboid(
+                prim_path="/World/Red_Cube",
+                name="red_cube",
+                position=np.array([0.6, 0.29, 0.025]),
+                scale=np.array([0.05, 0.05, 0.05]),
+                color=np.array([1.0, 0, 0]),  # Red
+            )
+        )
+        return
+
+    async def setup_post_load(self):
+        self._world = self.get_world()
+        self._franka = self._world.scene.get_object("franka_arm")
+        self._cubes = {
+            "yellow": self._world.scene.get_object("yellow_cube"),
+            "green": self._world.scene.get_object("green_cube"),
+            "blue": self._world.scene.get_object("blue_cube"),
+            "red": self._world.scene.get_object("red_cube"),
+        }
+
+        # Initialize a pick and place controller
+        self._controller = PickPlaceController(
+            name="pick_place_controller",
+            gripper=self._franka.gripper,
+            robot_articulation=self._franka,
+        )
+        self._world.add_physics_callback("sim_step", callback_fn=self.physics_step)
+
+        # Open the gripper
+        self._franka.gripper.set_joint_positions(self._franka.gripper.joint_opened_positions)
+        await self._world.play_async()
+        return
+
+    async def setup_post_reset(self):
+        self._controller.reset()
+        self._franka.gripper.set_joint_positions(self._franka.gripper.joint_opened_positions)
+        await self._world.play_async()
+        return
+
+    def physics_step(self, step_size):
+        # Task order for stacking
+        task_order = ["green", "blue", "red"]
+
+        # Base (Yellow Cube) position
+        yellow_cube_position, _ = self._cubes["yellow"].get_world_pose()
+        current_joint_positions = self._franka.get_joint_positions()
+
+        for cube_name in task_order:
+            cube_position, _ = self._cubes[cube_name].get_world_pose()
+
+            # Calculate stacking position
+            stacking_height = 0.05 * (task_order.index(cube_name) + 1) + 0.025
+            stacking_position = yellow_cube_position.copy()
+            stacking_position[2] += stacking_height
+
+            # Pick and place the cube
+            actions = self._controller.forward(
+                picking_position=cube_position,
+                placing_position=stacking_position,
+                current_joint_positions=current_joint_positions,
+            )
+            self._franka.apply_action(actions)
+
+            # Break the loop when task is completed
+            if self._controller.is_done():
+                continue
+
+        # Pause the simulation once the task is complete
+        self._world.pause()
+        return
